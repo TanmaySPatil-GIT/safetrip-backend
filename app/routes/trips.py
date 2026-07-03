@@ -276,20 +276,6 @@ def end_trip(
     db.refresh(trip)
     return trip
 
-@router.post("/admin/clear-active", status_code=status.HTTP_200_OK)
-def admin_clear_active_trips(db: Session = Depends(get_db)):
-    """
-    Temporary admin endpoint to end all active trips.
-    """
-    try:
-        active_trips = db.query(Trip).filter(Trip.status == "active").all()
-        for trip in active_trips:
-            trip.status = "ended"
-        db.commit()
-        return {"status": "success", "message": f"Ended {len(active_trips)} active trips."}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
 @router.get("/active", response_model=TripResponse)
 def get_active_trip(
     current_user: User = Depends(get_current_tourist),
