@@ -25,6 +25,12 @@ def check_and_add_checkin_columns():
         if "last_checkin_at" not in columns:
             conn.execute(text("ALTER TABLE trips ADD COLUMN last_checkin_at TIMESTAMP"))
             print("[DB] Added last_checkin_at column to trips table")
+        if "region_lat" not in columns:
+            conn.execute(text("ALTER TABLE trips ADD COLUMN region_lat FLOAT"))
+            print("[DB] Added region_lat column to trips table")
+        if "region_lng" not in columns:
+            conn.execute(text("ALTER TABLE trips ADD COLUMN region_lng FLOAT"))
+            print("[DB] Added region_lng column to trips table")
         
         # Check alerts table for dispatch_notes column
         alert_columns = [col["name"] for col in inspector.get_columns("alerts")]

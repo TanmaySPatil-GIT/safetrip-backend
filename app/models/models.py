@@ -36,6 +36,8 @@ class Trip(Base):
     start_date = Column(DateTime, nullable=False)
     end_date = Column(DateTime, nullable=False)
     region = Column(String, nullable=False)
+    region_lat = Column(Float, nullable=True)
+    region_lng = Column(Float, nullable=True)
     status = Column(String, default="active")  # active, ended
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     auto_delete_at = Column(DateTime, nullable=False)

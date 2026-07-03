@@ -109,6 +109,8 @@ class TripCreate(BaseModel):
     end_date: datetime.datetime = Field(..., description="Estimated end date and time of the trip")
     region: str = Field(..., description="Target region/route name for the trip")
     checkin_interval_hours: Optional[float] = Field(None, description="Check-in interval in hours")
+    region_lat: Optional[float] = Field(None, description="Latitude of target destination")
+    region_lng: Optional[float] = Field(None, description="Longitude of target destination")
 
 class TripResponse(BaseModel):
     id: int
@@ -121,6 +123,8 @@ class TripResponse(BaseModel):
     auto_delete_at: datetime.datetime
     checkin_interval_hours: Optional[float] = None
     last_checkin_at: Optional[datetime.datetime] = None
+    region_lat: Optional[float] = None
+    region_lng: Optional[float] = None
 
     class Config:
         from_attributes = True
@@ -191,6 +195,8 @@ class GroupAlertActionRequest(BaseModel):
 
 class BriefingRequest(BaseModel):
     region: str
+    lat: Optional[float] = None
+    lng: Optional[float] = None
 
 class BriefingZoneInfo(BaseModel):
     name: str
@@ -239,7 +245,9 @@ def start_trip(
         status="active",
         auto_delete_at=auto_delete_at,
         checkin_interval_hours=trip_data.checkin_interval_hours,
-        last_checkin_at=trip_data.start_date
+        last_checkin_at=trip_data.start_date,
+        region_lat=trip_data.region_lat,
+        region_lng=trip_data.region_lng
     )
     db.add(new_trip)
     db.commit()
@@ -1143,11 +1151,18 @@ def get_pre_trip_briefing(
     # 1. Match danger zones in the target region
     matched_zones = []
     lat_min, lat_max, lng_min, lng_max = None, None, None, None
-    for name_key, bounds in REGION_BOUNDS.items():
-        if name_key in region_name.lower():
-            lat_min, lat_max = bounds["lat"]
-            lng_min, lng_max = bounds["lng"]
-            break
+    
+    if payload.lat is not None and payload.lng is not None:
+        lat_min = payload.lat - 0.3
+        lat_max = payload.lat + 0.3
+        lng_min = payload.lng - 0.3
+        lng_max = payload.lng + 0.3
+    else:
+        for name_key, bounds in REGION_BOUNDS.items():
+            if name_key in region_name.lower():
+                lat_min, lat_max = bounds["lat"]
+                lng_min, lng_max = bounds["lng"]
+                break
             
     all_zones = db.query(DangerZone).all()
     for zone in all_zones:
@@ -1175,10 +1190,10 @@ def get_pre_trip_briefing(
 
     # 2. OpenWeatherMap current and forecast retrieval
     from app.core.config import settings
-    lat = settings.DEMO_CENTER_LAT
-    lng = settings.DEMO_CENTER_LNG
+    lat = payload.lat if payload.lat is not None else settings.DEMO_CENTER_LAT
+    lng = payload.lng if payload.lng is not None else settings.DEMO_CENTER_LNG
     
-    if matched_zones:
+    if not payload.lat and matched_zones:
         all_lats = []
         all_lngs = []
         for zone in matched_zones:
