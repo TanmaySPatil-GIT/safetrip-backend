@@ -202,6 +202,9 @@ class BriefingZoneInfo(BaseModel):
     name: str
     risk_score: float
     risk_level: str
+    photo_url: Optional[str] = None
+    hazard_type: Optional[str] = None
+    avoid_caption: Optional[str] = None
 
 class BriefingWeatherInfo(BaseModel):
     temp: float
@@ -216,6 +219,7 @@ class BriefingResponse(BaseModel):
     safety_tips: List[str]
     safe_hours: str
     warnings: List[str]
+    destination_photo_url: Optional[str] = None
 
 
 
@@ -1409,23 +1413,190 @@ def get_pre_trip_briefing(
         if area_risk_score >= 70.0:
             warnings.append(f"High Risk Area Warning: The selected location has an elevated area risk rating of {area_risk_score}/100.")
 
-    # 5. Format danger zones list
+    # 5. Fetch destination photo via Wikipedia Summary API
+    def fetch_wikipedia_photo(place_name: str) -> Optional[str]:
+        import urllib.parse
+        headers = {"User-Agent": "SafeTrip-App/1.0"}
+        
+        try:
+            encoded = urllib.parse.quote(place_name.strip())
+            url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{encoded}"
+            res = requests.get(url, headers=headers, timeout=4)
+            if res.status_code == 200:
+                data = res.json()
+                img = data.get("originalimage", {}).get("source") or data.get("thumbnail", {}).get("source")
+                if img:
+                    return img
+        except Exception:
+            pass
+            
+        if "," in place_name:
+            try:
+                first_part = place_name.split(",")[0].strip()
+                encoded = urllib.parse.quote(first_part)
+                url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{encoded}"
+                res = requests.get(url, headers=headers, timeout=4)
+                if res.status_code == 200:
+                    data = res.json()
+                    img = data.get("originalimage", {}).get("source") or data.get("thumbnail", {}).get("source")
+                    if img:
+                        return img
+            except Exception:
+                pass
+        return None
+
+    dest_photo = fetch_wikipedia_photo(region_name)
+    if not dest_photo:
+        dest_photo = "https://images.unsplash.com/photo-1524661135-423995f22d0b?auto=format&fit=crop&w=800&q=80"
+
+    # Helper definitions for fetching hazard-specific representative photos
+    HAZARD_FALLBACKS = {
+        "heavy_rain": "https://images.unsplash.com/photo-1534274988757-a28bf1a57c17?auto=format&fit=crop&w=600&q=80",
+        "steep_terrain": "https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&w=600&q=80",
+        "high_altitude": "https://images.unsplash.com/photo-1506744038136-46273834b3fb?auto=format&fit=crop&w=600&q=80",
+        "low_visibility": "https://images.unsplash.com/photo-1494548162494-384bba4ab999?auto=format&fit=crop&w=600&q=80",
+        "strong_wind": "https://images.unsplash.com/photo-1508739773434-c26b3d09e071?auto=format&fit=crop&w=600&q=80",
+        "clear_weather": "https://images.unsplash.com/photo-1501555088652-021faa106b9b?auto=format&fit=crop&w=600&q=80",
+    }
+    HAZARD_SEARCH_TERMS = {
+        "heavy_rain": "flooded trail rain",
+        "steep_terrain": "steep mountain slope",
+        "high_altitude": "high altitude mountain landscape",
+        "low_visibility": "foggy mist trail",
+        "strong_wind": "windy stormy weather",
+    }
+
+    def fetch_pexels_image(hazard_type: str, api_key: str) -> str:
+        if not api_key:
+            return HAZARD_FALLBACKS.get(hazard_type, "")
+        global _pexels_cache
+        if '_pexels_cache' not in globals():
+            globals()['_pexels_cache'] = {}
+        if hazard_type in globals()['_pexels_cache']:
+            return globals()['_pexels_cache'][hazard_type]
+        
+        import urllib.parse
+        query = HAZARD_SEARCH_TERMS.get(hazard_type, "mountain safety")
+        url = f"https://api.pexels.com/v1/search?query={urllib.parse.quote(query)}&per_page=1"
+        headers = {"Authorization": api_key}
+        try:
+            res = requests.get(url, headers=headers, timeout=5)
+            if res.status_code == 200:
+                data = res.json()
+                photos = data.get("photos", [])
+                if photos:
+                    img_url = photos[0].get("src", {}).get("medium", "")
+                    if img_url:
+                        globals()['_pexels_cache'][hazard_type] = img_url
+                        return img_url
+        except Exception as e:
+            logger.warning("Pexels fetch failed for %s: %s", hazard_type, e)
+        return HAZARD_FALLBACKS.get(hazard_type, "")
+
+    # 6. Format danger zones list
+    danger_zones_info = []
     if is_yosemite:
-        danger_zones_info = [
-            BriefingZoneInfo(
-                name=z.name,
-                risk_score=z.computed_risk_score,
-                risk_level=z.risk_level or "unknown"
-            ) for z in matched_zones
-        ]
-    else:
-        danger_zones_info = [
-            BriefingZoneInfo(
-                name="General Trip Area",
-                risk_score=area_risk_score,
-                risk_level="high" if area_risk_score >= 70.0 else ("medium" if area_risk_score >= 40.0 else "low")
+        for z in matched_zones:
+            photo_url = None
+            if z.photos:
+                photo_url = z.photos[0].photo_url
+            if not photo_url:
+                photo_url = fetch_wikipedia_photo(z.name)
+            if not photo_url:
+                photo_url = "https://images.unsplash.com/photo-1524661135-423995f22d0b?auto=format&fit=crop&w=800&q=80"
+                
+            avoid_caption = "Proceed with caution and stick to designated trails."
+            if "half dome" in z.name.lower():
+                avoid_caption = "Use high-grip shoes, wear safety harnesses/gloves, and abort the climb if storm clouds build up."
+            elif "mist trail" in z.name.lower():
+                avoid_caption = "Watch out for slippery granite steps, hold onto guardrails, and wear waterproof outer layers."
+                
+            danger_zones_info.append(
+                BriefingZoneInfo(
+                    name=z.name,
+                    risk_score=z.computed_risk_score,
+                    risk_level=z.risk_level or "unknown",
+                    photo_url=photo_url,
+                    hazard_type="curated_danger_zone",
+                    avoid_caption=avoid_caption
+                )
             )
-        ]
+    else:
+        # Dynamic location hazards
+        hazards = []
+        
+        # 1. High Altitude
+        if elevation_factor >= 5.0:
+            hazards.append({
+                "name": "High Altitude Zone",
+                "risk_score": round(elevation_factor * 10.0, 2),
+                "risk_level": "high" if elevation_factor >= 7.0 else "medium",
+                "hazard_type": "high_altitude",
+                "avoid_caption": "Acclimatize to altitude, monitor for symptoms of mountain sickness (headache/nausea), and carry warm layers."
+            })
+            
+        # 2. Steep Slope
+        if slope_factor >= 5.0:
+            hazards.append({
+                "name": "Steep Slope / Rugged Terrain",
+                "risk_score": round(slope_factor * 10.0, 2),
+                "risk_level": "high" if slope_factor >= 7.0 else "medium",
+                "hazard_type": "steep_terrain",
+                "avoid_caption": "Use rugged hiking footwear, stay on marked paths, avoid cliff edges, and watch for loose rocks."
+            })
+            
+        # 3. Rain / Flood
+        if rainfall_factor >= 4.0 or is_warning or forecast_rain:
+            hazards.append({
+                "name": "Rain / Flash Flood Risk",
+                "risk_score": round(max(rainfall_factor * 10.0, 40.0), 2),
+                "risk_level": "high" if (rainfall_factor >= 7.0 or is_warning) else "medium",
+                "hazard_type": "heavy_rain",
+                "avoid_caption": "Wear heavy waterproof shells, avoid low-lying trails, and do not attempt to cross flooded streams."
+            })
+            
+        # 4. Strong Wind
+        if wind_factor >= 5.0:
+            hazards.append({
+                "name": "High Wind Hazard",
+                "risk_score": round(wind_factor * 10.0, 2),
+                "risk_level": "high" if wind_factor >= 7.0 else "medium",
+                "hazard_type": "strong_wind",
+                "avoid_caption": "Secure lose gear, avoid ridge trails, watch out for falling branches/debris, and prepare windbreaks."
+            })
+            
+        # 5. Low Visibility
+        if "fog" in condition.lower() or "mist" in condition.lower() or "haze" in condition.lower() or rainfall_factor >= 7.0:
+            hazards.append({
+                "name": "Low Visibility Trail",
+                "risk_score": 70.0 if rainfall_factor >= 7.0 else 50.0,
+                "risk_level": "high" if rainfall_factor >= 7.0 else "medium",
+                "hazard_type": "low_visibility",
+                "avoid_caption": "Use trail markings and GPS navigation, carry high-visibility gear or a headlamp, and slow down your pace."
+            })
+            
+        # 6. Fallback clear weather
+        if not hazards:
+            hazards.append({
+                "name": "Low Risk Area",
+                "risk_score": area_risk_score,
+                "risk_level": "low",
+                "hazard_type": "clear_weather",
+                "avoid_caption": "Enjoy your trip! Keep tracking active, monitor weather changes, and check in on schedule."
+            })
+            
+        for h in hazards:
+            img = fetch_pexels_image(h["hazard_type"], settings.PEXELS_API_KEY)
+            danger_zones_info.append(
+                BriefingZoneInfo(
+                    name=h["name"],
+                    risk_score=h["risk_score"],
+                    risk_level=h["risk_level"],
+                    photo_url=img,
+                    hazard_type=h["hazard_type"],
+                    avoid_caption=h["avoid_caption"]
+                )
+            )
 
     return BriefingResponse(
         region=payload.region,
@@ -1438,7 +1609,8 @@ def get_pre_trip_briefing(
         ),
         safety_tips=safety_tips,
         safe_hours=safe_hours,
-        warnings=warnings
+        warnings=warnings,
+        destination_photo_url=dest_photo
     )
 
 @router.post("/{trip_id}/checkin")

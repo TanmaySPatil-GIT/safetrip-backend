@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     # Third Party API keys
     GOOGLE_MAPS_API_KEY: str = ""
     OPENWEATHERMAP_API_KEY: str = ""
+    PEXELS_API_KEY: str = ""
     TWILIO_ACCOUNT_SID: str = ""
     TWILIO_AUTH_TOKEN: str = ""
     TWILIO_FROM_NUMBER: str = ""
