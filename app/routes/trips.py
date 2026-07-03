@@ -1274,36 +1274,87 @@ def get_pre_trip_briefing(
 
     # 3. Rule-based safety tips & risk calculations
     if not is_yosemite:
+        # Fetch real terrain/elevation data from Open-Elevation
+        elevation = 0.0
+        max_diff = 0.0
+        slope_factor = 1.0 # default flat
+        elevation_factor = 0.0
+        network_factor = 8.0 # default high coverage (low risk)
+        
+        if payload.lat is not None and payload.lng is not None:
+            try:
+                delta = 0.0045 # ~500m offset
+                locations = [
+                    {"latitude": payload.lat, "longitude": payload.lng},
+                    {"latitude": payload.lat + delta, "longitude": payload.lng}, # North
+                    {"latitude": payload.lat - delta, "longitude": payload.lng}, # South
+                    {"latitude": payload.lat, "longitude": payload.lng + delta}, # East
+                    {"latitude": payload.lat, "longitude": payload.lng - delta}  # West
+                ]
+                el_url = "https://api.open-elevation.com/api/v1/lookup"
+                el_res = requests.post(el_url, json={"locations": locations}, timeout=6)
+                if el_res.status_code == 200:
+                    results = el_res.json().get("results", [])
+                    if len(results) >= 5:
+                        elevations = [item.get("elevation", 0.0) for item in results]
+                        elevation = elevations[0]
+                        center = elevations[0]
+                        others = elevations[1:]
+                        max_diff = max(abs(el - center) for el in others) if others else 0.0
+                        
+                        # Elevation Factor (0-10 scale): mapping 500m to 2500m
+                        if elevation < 500.0:
+                            elevation_factor = 0.0
+                        elif elevation > 2500.0:
+                            elevation_factor = 10.0
+                        else:
+                            elevation_factor = (elevation - 500.0) / 200.0
+                            
+                        # Slope Factor (0-10 scale): mapping 5m to 50m max diff over 500m
+                        if max_diff < 5.0:
+                            slope_factor = 1.0
+                        elif max_diff > 50.0:
+                            slope_factor = 10.0
+                        else:
+                            slope_factor = (max_diff - 5.0) / 5.0 + 1.0
+                            
+                        # Simulate network factor (worse in remote mountainous regions)
+                        network_factor = max(1.0, 10.0 - (elevation_factor * 0.4 + slope_factor * 0.6))
+            except Exception as e:
+                logger.warning("Open-Elevation lookup failed, falling back: %s", e)
+
         # Calculate dynamic weather factors
         rainfall_factor = min(10.0, rain_volume * 2.0) if rain_volume > 0.0 else 0.0
-        wind_factor = min(10.0, (wind_speed - 5.0) / 1.0 + 1.0) if wind_speed >= 5.0 else 1.0
+        wind_factor = min(10.0, (wind_speed - 3.0) / 1.2) if wind_speed >= 3.0 else 0.0
         
         if temp < 5.0:
-            temp_factor = min(10.0, (5.0 - temp) * 2.0)
+            temp_factor = min(10.0, (5.0 - temp) * 1.5)
         elif temp > 30.0:
             temp_factor = min(10.0, (temp - 30.0) * 1.0)
         else:
             temp_factor = 0.0
 
-        # Weighted calculation: slope=1, forest=1, network=1, rain=2, wind=1.5, temp=1.5
+        # Weighted calculation (Yosemite ratios): slope=1.5, forest=1, network=1, rain=2, wind=1.5, temp=1.5, elevation=1.5
         total_weighted_risk = (
-            2.0 * 1.0 + # slope default
-            2.0 * 1.0 + # forest density default
-            6.0 * 1.0 + # network coverage default
+            slope_factor * 1.5 +
+            2.0 * 1.0 + # forest density default (low risk)
+            (10.0 - network_factor) * 1.0 +
             rainfall_factor * 2.0 +
             wind_factor * 1.5 +
-            temp_factor * 1.5
+            temp_factor * 1.5 +
+            elevation_factor * 1.5
         )
-        total_weight = 1.0 + 1.0 + 1.0 + 2.0 + 1.5 + 1.5
+        total_weight = 1.5 + 1.0 + 1.0 + 2.0 + 1.5 + 1.5 + 1.5 # 10.0
         area_risk_score = round(min(100.0, max(0.0, (total_weighted_risk / total_weight) * 10.0)), 2)
 
         highest_factors = {
             "rainfall": rainfall_factor,
             "wind_speed": wind_factor,
             "temp": temp_factor,
-            "network_coverage": 6.0,
-            "slope": 2.0,
-            "forest_density": 2.0
+            "network_coverage": 10.0 - network_factor,
+            "slope": slope_factor,
+            "forest_density": 2.0,
+            "elevation": elevation_factor
         }
     else:
         # Rule-based safety tips
@@ -1321,15 +1372,18 @@ def get_pre_trip_briefing(
                     highest_factors[f.factor_type] = risk_contrib
 
     tips_pool = []
-    if highest_factors.get("rainfall", 0) >= 6.0 or is_warning or forecast_rain:
+    # Location-specific recommendations based on actual factors
+    if highest_factors.get("rainfall", 0) >= 5.0 or is_warning or forecast_rain:
         tips_pool.append("Carry robust waterproof gear and avoid high-water river crossings or low trail sections.")
+    if highest_factors.get("elevation", 0) >= 6.0:
+        tips_pool.append("High altitude detected. Rest to acclimatize, monitor for symptoms of altitude sickness, and carry warm layers.")
+    if highest_factors.get("slope", 0) >= 5.0:
+        tips_pool.append("Terrain is very steep and rugged. Use sturdy hiking boots, stick to marked paths, and avoid cliffs.")
     if highest_factors.get("network_coverage", 0) >= 6.0:
         tips_pool.append("Download offline maps for the region and share your check-in schedule with your Trip Buddy.")
-    if highest_factors.get("slope", 0) >= 6.0:
-        tips_pool.append("Terrain is very steep and rocky. Use sturdy hiking boots, stick to marked paths, and avoid cliffs.")
-    if highest_factors.get("forest_density", 0) >= 6.0:
-        tips_pool.append("High forest density can limit visibility. Keep trail markers in sight and carry a safety whistle.")
-    
+    if highest_factors.get("wind_speed", 0) >= 6.0:
+        tips_pool.append("High wind warning. Secure loose gear, watch for falling branches, and avoid exposed ridge trails.")
+
     general_tips = [
         "Carry at least 2 liters of water per person and high-energy trail snacks.",
         "Check your phone's battery level and carry a portable power bank.",
