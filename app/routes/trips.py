@@ -1148,45 +1148,54 @@ def get_pre_trip_briefing(
 ):
     region_name = payload.region.strip()
     
-    # 1. Match danger zones in the target region
-    matched_zones = []
-    lat_min, lat_max, lng_min, lng_max = None, None, None, None
-    
-    if payload.lat is not None and payload.lng is not None:
-        lat_min = payload.lat - 0.3
-        lat_max = payload.lat + 0.3
-        lng_min = payload.lng - 0.3
-        lng_max = payload.lng + 0.3
-    else:
-        for name_key, bounds in REGION_BOUNDS.items():
-            if name_key in region_name.lower():
-                lat_min, lat_max = bounds["lat"]
-                lng_min, lng_max = bounds["lng"]
-                break
+    # Detect if trip is Yosemite (curated) or arbitrary
+    is_yosemite = False
+    if "yosemite" in region_name.lower():
+        is_yosemite = True
+    elif payload.lat is not None and payload.lng is not None:
+        if abs(payload.lat - 37.7456) < 0.4 and abs(payload.lng - (-119.5332)) < 0.4:
+            is_yosemite = True
             
-    all_zones = db.query(DangerZone).all()
-    for zone in all_zones:
-        if lat_min is not None and lat_max is not None:
-            in_bbox = False
-            for pt in zone.polygon_coordinates:
-                if lat_min <= pt[0] <= lat_max and lng_min <= pt[1] <= lng_max:
-                    in_bbox = True
-                    break
-            if in_bbox:
-                matched_zones.append(zone)
+    # 1. Match danger zones in the target region (if Yosemite)
+    matched_zones = []
+    if is_yosemite:
+        lat_min, lat_max, lng_min, lng_max = None, None, None, None
+        
+        if payload.lat is not None and payload.lng is not None:
+            lat_min = payload.lat - 0.3
+            lat_max = payload.lat + 0.3
+            lng_min = payload.lng - 0.3
+            lng_max = payload.lng + 0.3
         else:
-            words = [w.lower() for w in region_name.split() if len(w) > 3]
-            if any(w in zone.name.lower() for w in words):
-                matched_zones.append(zone)
-                
-    if not matched_zones and "yosemite" in region_name.lower():
-        lat_min, lat_max = [37.4, 38.0]
-        lng_min, lng_max = [-119.7, -119.3]
-        for zone in all_zones:
-            for pt in zone.polygon_coordinates:
-                if lat_min <= pt[0] <= lat_max and lng_min <= pt[1] <= lng_max:
-                    matched_zones.append(zone)
+            for name_key, bounds in REGION_BOUNDS.items():
+                if name_key in region_name.lower():
+                    lat_min, lat_max = bounds["lat"]
+                    lng_min, lng_max = bounds["lng"]
                     break
+                
+        all_zones = db.query(DangerZone).all()
+        for zone in all_zones:
+            if lat_min is not None and lat_max is not None:
+                in_bbox = False
+                for pt in zone.polygon_coordinates:
+                    if lat_min <= pt[0] <= lat_max and lng_min <= pt[1] <= lng_max:
+                        in_bbox = True
+                        break
+                if in_bbox:
+                    matched_zones.append(zone)
+            else:
+                words = [w.lower() for w in region_name.split() if len(w) > 3]
+                if any(w in zone.name.lower() for w in words):
+                    matched_zones.append(zone)
+                    
+        if not matched_zones and "yosemite" in region_name.lower():
+            lat_min, lat_max = [37.4, 38.0]
+            lng_min, lng_max = [-119.7, -119.3]
+            for zone in all_zones:
+                for pt in zone.polygon_coordinates:
+                    if lat_min <= pt[0] <= lat_max and lng_min <= pt[1] <= lng_max:
+                        matched_zones.append(zone)
+                        break
 
     # 2. OpenWeatherMap current and forecast retrieval
     from app.core.config import settings
@@ -1209,6 +1218,8 @@ def get_pre_trip_briefing(
     is_warning = False
     forecast_rain = False
     safe_hours = "24+ hours (Clear weather)"
+    rain_volume = 0.0
+    wind_speed = 3.0 # default low wind speed in m/s
     
     if api_key:
         try:
@@ -1222,6 +1233,7 @@ def get_pre_trip_briefing(
                     condition = conds[0].get("description", condition).title()
                 
                 rain_volume = wdata.get("rain", {}).get("1h", 0.0)
+                wind_speed = wdata.get("wind", {}).get("speed", wind_speed)
                 if rain_volume > 0:
                     rainfall_status = f"{rain_volume} mm/h"
                     if rain_volume > 5.0:
@@ -1257,20 +1269,56 @@ def get_pre_trip_briefing(
         is_warning = True
         forecast_rain = True
         safe_hours = "3 hours (Rain expected to worsen)"
+        rain_volume = 4.2
+        wind_speed = 6.5
 
-    # 3. Rule-based safety tips
-    highest_factors = {}
-    for zone in matched_zones:
-        factors = db.query(RiskFactor).filter(RiskFactor.zone_id == zone.id).all()
-        for f in factors:
-            val = f.value
-            if f.factor_type == "network_coverage":
-                risk_contrib = max(0.0, 10.0 - val)
-            else:
-                risk_contrib = val
-            
-            if f.factor_type not in highest_factors or risk_contrib > highest_factors[f.factor_type]:
-                highest_factors[f.factor_type] = risk_contrib
+    # 3. Rule-based safety tips & risk calculations
+    if not is_yosemite:
+        # Calculate dynamic weather factors
+        rainfall_factor = min(10.0, rain_volume * 2.0) if rain_volume > 0.0 else 0.0
+        wind_factor = min(10.0, (wind_speed - 5.0) / 1.0 + 1.0) if wind_speed >= 5.0 else 1.0
+        
+        if temp < 5.0:
+            temp_factor = min(10.0, (5.0 - temp) * 2.0)
+        elif temp > 30.0:
+            temp_factor = min(10.0, (temp - 30.0) * 1.0)
+        else:
+            temp_factor = 0.0
+
+        # Weighted calculation: slope=1, forest=1, network=1, rain=2, wind=1.5, temp=1.5
+        total_weighted_risk = (
+            2.0 * 1.0 + # slope default
+            2.0 * 1.0 + # forest density default
+            6.0 * 1.0 + # network coverage default
+            rainfall_factor * 2.0 +
+            wind_factor * 1.5 +
+            temp_factor * 1.5
+        )
+        total_weight = 1.0 + 1.0 + 1.0 + 2.0 + 1.5 + 1.5
+        area_risk_score = round(min(100.0, max(0.0, (total_weighted_risk / total_weight) * 10.0)), 2)
+
+        highest_factors = {
+            "rainfall": rainfall_factor,
+            "wind_speed": wind_factor,
+            "temp": temp_factor,
+            "network_coverage": 6.0,
+            "slope": 2.0,
+            "forest_density": 2.0
+        }
+    else:
+        # Rule-based safety tips
+        highest_factors = {}
+        for zone in matched_zones:
+            factors = db.query(RiskFactor).filter(RiskFactor.zone_id == zone.id).all()
+            for f in factors:
+                val = f.value
+                if f.factor_type == "network_coverage":
+                    risk_contrib = max(0.0, 10.0 - val)
+                else:
+                    risk_contrib = val
+                
+                if f.factor_type not in highest_factors or risk_contrib > highest_factors[f.factor_type]:
+                    highest_factors[f.factor_type] = risk_contrib
 
     tips_pool = []
     if highest_factors.get("rainfall", 0) >= 6.0 or is_warning or forecast_rain:
@@ -1299,17 +1347,31 @@ def get_pre_trip_briefing(
         warnings.append("Active Rainfall Warning: Rain levels currently present a mudslide or flash flood hazard.")
     if forecast_rain:
         warnings.append(f"Worsening weather expected: Heavy rain or storms forecasted within {safe_hours}.")
-    if any(z.computed_risk_score >= 70.0 for z in matched_zones):
-        warnings.append("High Risk Areas Detected: The planned region contains zones with extreme risk ratings.")
+    
+    if is_yosemite:
+        if any(z.computed_risk_score >= 70.0 for z in matched_zones):
+            warnings.append("High Risk Areas Detected: The planned region contains zones with extreme risk ratings.")
+    else:
+        if area_risk_score >= 70.0:
+            warnings.append(f"High Risk Area Warning: The selected location has an elevated area risk rating of {area_risk_score}/100.")
 
     # 5. Format danger zones list
-    danger_zones_info = [
-        BriefingZoneInfo(
-            name=z.name,
-            risk_score=z.computed_risk_score,
-            risk_level=z.risk_level or "unknown"
-        ) for z in matched_zones
-    ]
+    if is_yosemite:
+        danger_zones_info = [
+            BriefingZoneInfo(
+                name=z.name,
+                risk_score=z.computed_risk_score,
+                risk_level=z.risk_level or "unknown"
+            ) for z in matched_zones
+        ]
+    else:
+        danger_zones_info = [
+            BriefingZoneInfo(
+                name="General Trip Area",
+                risk_score=area_risk_score,
+                risk_level="high" if area_risk_score >= 70.0 else ("medium" if area_risk_score >= 40.0 else "low")
+            )
+        ]
 
     return BriefingResponse(
         region=payload.region,
