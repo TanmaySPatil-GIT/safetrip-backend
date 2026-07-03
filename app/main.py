@@ -9,28 +9,31 @@ from app.routes.trips import router as trips_router, alerts_router
 # Create database tables
 Base.metadata.create_all(bind=engine)
 
+from sqlalchemy import inspect
+
 def check_and_add_checkin_columns():
     from sqlalchemy import text
+    inspector = inspect(engine)
+    
+    # Get columns for trips table
+    columns = [col["name"] for col in inspector.get_columns("trips")]
+    
     with engine.connect() as conn:
-        result = conn.execute(text("PRAGMA table_info(trips)"))
-        columns = [row[1] for row in result.fetchall()]
         if "checkin_interval_hours" not in columns:
             conn.execute(text("ALTER TABLE trips ADD COLUMN checkin_interval_hours FLOAT"))
             print("[DB] Added checkin_interval_hours column to trips table")
         if "last_checkin_at" not in columns:
-            conn.execute(text("ALTER TABLE trips ADD COLUMN last_checkin_at DATETIME"))
+            conn.execute(text("ALTER TABLE trips ADD COLUMN last_checkin_at TIMESTAMP"))
             print("[DB] Added last_checkin_at column to trips table")
         
         # Check alerts table for dispatch_notes column
-        alert_result = conn.execute(text("PRAGMA table_info(alerts)"))
-        alert_columns = [row[1] for row in alert_result.fetchall()]
+        alert_columns = [col["name"] for col in inspector.get_columns("alerts")]
         if "dispatch_notes" not in alert_columns:
             conn.execute(text("ALTER TABLE alerts ADD COLUMN dispatch_notes TEXT"))
             print("[DB] Added dispatch_notes column to alerts table")
             
         # Check users table for preferred_language column
-        user_result = conn.execute(text("PRAGMA table_info(users)"))
-        user_columns = [row[1] for row in user_result.fetchall()]
+        user_columns = [col["name"] for col in inspector.get_columns("users")]
         if "preferred_language" not in user_columns:
             conn.execute(text("ALTER TABLE users ADD COLUMN preferred_language VARCHAR DEFAULT 'en' NOT NULL"))
             print("[DB] Added preferred_language column to users table")
