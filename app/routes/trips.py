@@ -1032,7 +1032,7 @@ def get_group_members(
                 break
 
     if not user_group:
-        raise HTTPException(status_code=404, detail="No active group trip found.")
+        return []
 
     # List of Leaflet marker colors
     colors = ["blue", "red", "green", "gold", "violet", "orange", "yellow", "grey", "black"]
