@@ -125,6 +125,7 @@ class TripResponse(BaseModel):
     last_checkin_at: Optional[datetime.datetime] = None
     region_lat: Optional[float] = None
     region_lng: Optional[float] = None
+    destination_photo_url: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -222,6 +223,37 @@ class BriefingResponse(BaseModel):
     destination_photo_url: Optional[str] = None
 
 
+def fetch_wikipedia_photo(place_name: str) -> Optional[str]:
+    import urllib.parse
+    headers = {"User-Agent": "SafeTrip-App/1.0"}
+    
+    try:
+        encoded = urllib.parse.quote(place_name.strip())
+        url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{encoded}"
+        res = requests.get(url, headers=headers, timeout=4)
+        if res.status_code == 200:
+            data = res.json()
+            img = data.get("originalimage", {}).get("source") or data.get("thumbnail", {}).get("source")
+            if img:
+                return img
+    except Exception:
+        pass
+        
+    if "," in place_name:
+        try:
+            first_part = place_name.split(",")[0].strip()
+            encoded = urllib.parse.quote(first_part)
+            url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{encoded}"
+            res = requests.get(url, headers=headers, timeout=4)
+            if res.status_code == 200:
+                data = res.json()
+                img = data.get("originalimage", {}).get("source") or data.get("thumbnail", {}).get("source")
+                if img:
+                    return img
+        except Exception:
+            pass
+    return None
+
 
 # Endpoints
 @router.post("/start", response_model=TripResponse, status_code=status.HTTP_201_CREATED)
@@ -256,6 +288,7 @@ def start_trip(
     db.add(new_trip)
     db.commit()
     db.refresh(new_trip)
+    new_trip.destination_photo_url = fetch_wikipedia_photo(new_trip.region)
     return new_trip
 
 @router.post("/{trip_id}/end", response_model=TripResponse)
@@ -299,6 +332,7 @@ def get_active_trip(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="No active trip found for current user"
         )
+    trip.destination_photo_url = fetch_wikipedia_photo(trip.region)
     return trip
 
 @router.post("/{trip_id}/ping", response_model=PingIngestResponse)
@@ -1412,38 +1446,6 @@ def get_pre_trip_briefing(
     else:
         if area_risk_score >= 70.0:
             warnings.append(f"High Risk Area Warning: The selected location has an elevated area risk rating of {area_risk_score}/100.")
-
-    # 5. Fetch destination photo via Wikipedia Summary API
-    def fetch_wikipedia_photo(place_name: str) -> Optional[str]:
-        import urllib.parse
-        headers = {"User-Agent": "SafeTrip-App/1.0"}
-        
-        try:
-            encoded = urllib.parse.quote(place_name.strip())
-            url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{encoded}"
-            res = requests.get(url, headers=headers, timeout=4)
-            if res.status_code == 200:
-                data = res.json()
-                img = data.get("originalimage", {}).get("source") or data.get("thumbnail", {}).get("source")
-                if img:
-                    return img
-        except Exception:
-            pass
-            
-        if "," in place_name:
-            try:
-                first_part = place_name.split(",")[0].strip()
-                encoded = urllib.parse.quote(first_part)
-                url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{encoded}"
-                res = requests.get(url, headers=headers, timeout=4)
-                if res.status_code == 200:
-                    data = res.json()
-                    img = data.get("originalimage", {}).get("source") or data.get("thumbnail", {}).get("source")
-                    if img:
-                        return img
-            except Exception:
-                pass
-        return None
 
     dest_photo = fetch_wikipedia_photo(region_name)
     if not dest_photo:
