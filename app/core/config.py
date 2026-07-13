@@ -6,6 +6,7 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "sqlite:///./safetrip.db"
     JWT_SECRET: str = "supersecretjwtkeyforlocaldevelopmentonly123!"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440
+    DEMO_MODE: bool = False
     
     # Demo configuration
     DEMO_REGION_NAME: str = "Yosemite National Park"

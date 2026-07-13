@@ -1,5 +1,6 @@
 import datetime
 import sys
+# pyrefly: ignore [missing-import]
 from fastapi.testclient import TestClient
 
 # Ensure backend folder is in path

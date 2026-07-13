@@ -9,6 +9,7 @@ from app.core.database import get_db
 from app.core.security import get_password_hash, verify_password, create_access_token
 from app.core.dependencies import get_current_tourist, get_current_authority
 from app.models.models import User, AuthorityUser, OTPToken
+from app.core.config import settings
 
 logger = logging.getLogger("safetrip.auth")
 
@@ -107,7 +108,7 @@ def verify_otp(payload: TouristOTPVerify, db: Session = Depends(get_db)):
     ).order_by(OTPToken.created_at.desc()).first()
     
     # Fallback to absolute backdoor for simple manual testing: '123456'
-    if not otp_record and code == "123456":
+    if settings.DEMO_MODE and not otp_record and code == "123456":
         # Allow backdoor code '123456' for local testing
         otp_record = True
         logger.warning(f"Backdoor code used for {phone}")

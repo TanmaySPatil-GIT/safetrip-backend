@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.database import engine, Base
 from app.models.models import User, AuthorityUser, Trip, LocationPing, DangerZone, RiskFactor, ZonePhoto, Alert, TripGroup, GroupAlert, TripFeedback
+from app.core.config import settings
 
 from app.routes.auth import router as auth_router
 from app.routes.trips import router as trips_router, alerts_router
@@ -51,9 +52,18 @@ check_and_add_checkin_columns()
 app = FastAPI(title="SafeTrip API", version="1.0.0")
 
 # Configure CORS for Reflex and external connections
+origins = ["https://safetrip-reflex-backend.onrender.com"]
+if settings.DEMO_MODE:
+    origins.extend([
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+    ])
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
